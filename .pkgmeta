@@ -3,12 +3,13 @@ curse-id: 1556060
 
 externals:
   Libs/LibStub:
-    url: https://repos.wowace.com/wow/libs/trunk/LibStub
-    type: svn
+    url: https://github.com/Kemayo/wow-libstub.git
+    type: git
   Libs/LibDataBroker-1.1:
     url: https://github.com/tekkub/libdatabroker-1-1.git
     type: git
     tag: latest
   Libs/LibDBIcon-1.0:
-    url: https://repos.wowace.com/wow/libdbicon-1-0/trunk
-    type: svn
+    url: https://github.com/nevcairiel/LibDBIcon.git
+    type: git
+    tag: latest
