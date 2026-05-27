@@ -1,0 +1,17 @@
+## Interface: 120005
+## Title: SoloCompass
+## Notes: A dashboard for solo players — housing nudges, collection targets, and questline cleanup.
+## Author: myathemagick-netizen
+## Version: 0.1.0
+## SavedVariables: SoloCompassDB
+## SavedVariablesPerCharacter: SoloCompassCharDB
+
+Libs\LibStub\LibStub.lua
+Libs\LibDataBroker-1.1\LibDataBroker-1.1.lua
+Libs\LibDBIcon-1.0\LibDBIcon-1.0.lua
+
+SoloCompass.lua
+Data.lua
+Suggestions.lua
+UI.lua
+Minimap.lua

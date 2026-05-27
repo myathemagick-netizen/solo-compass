@@ -1,0 +1,13 @@
+package-as: SoloCompass
+
+externals:
+  Libs/LibStub:
+    url: https://repos.wowace.com/wow/libs/trunk/LibStub
+    type: svn
+  Libs/LibDataBroker-1.1:
+    url: https://github.com/tekkub/libdatabroker-1-1.git
+    type: git
+    tag: latest
+  Libs/LibDBIcon-1.0:
+    url: https://repos.wowace.com/wow/libdbicon-1-0/trunk
+    type: svn
