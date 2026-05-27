@@ -1,5 +1,5 @@
 package-as: SoloCompass
-curse-id: 1556060
+curse-project-id: 1556060
 
 externals:
   Libs/LibStub:

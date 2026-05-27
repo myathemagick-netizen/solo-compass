@@ -14,7 +14,6 @@ jobs:
           fetch-depth: 0
 
       - uses: BigWigsMods/packager@v2
-        with:
-          cf-project-id: 1556060
         env:
           CF_API_KEY: ${{ secrets.CF_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
