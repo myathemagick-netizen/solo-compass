@@ -14,8 +14,6 @@ jobs:
 
       - name: Package and upload to CurseForge
         uses: BigWigsMods/packager@v2
-        with:
-          args: -u
         env:
           CF_API_KEY: ${{ secrets.CF_API_KEY }}
           CF_PROJECT_ID: 1556060
