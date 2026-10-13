@@ -1,6 +1,14 @@
 package-as: SoloCompass
 curse-id: 1556060
 
+manual-changelog: CHANGELOG.md
+
+ignore:
+  - tests
+  - docs
+  - README.md
+  - .github
+
 externals:
   Libs/LibStub:
     url: https://repos.wowace.com/wow/libs/trunk/LibStub

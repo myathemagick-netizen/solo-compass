@@ -1,166 +1,149 @@
--- SoloCompass: suggestion engine
--- Reads live game APIs + Data tables, returns 2-4 suggestions per pillar.
-
 SoloCompass.Suggestions = {}
-local SS = SoloCompass.Suggestions
-local D  = SoloCompass.Data
-
-local MAX_PER_PILLAR = 4
-
--- Entry point: returns { housing={}, collector={}, quests={} }
-function SS:Build()
-    local interests = SoloCompassCharDB.interests
-    return {
-        housing   = interests.housing   and self:BuildHousing()   or {},
-        collector = interests.collector and self:BuildCollector()  or {},
-        quests    = interests.quests    and self:BuildQuests()     or {},
-    }
-end
-
--- Housing pillar ----------------------------------------------------------
-
-function SS:BuildHousing()
-    local results = {}
-    for _, nudge in ipairs(D.HousingNudges) do
-        if #results >= MAX_PER_PILLAR then break end
-        -- TODO: gate "visit" nudge on C_PlayerHousing API when available
-        table.insert(results, {
-            pillar = "housing",
-            id     = nudge.id,
-            text   = nudge.text,
-            icon   = "Interface\\Icons\\INV_Misc_House_01",
-        })
+local SS, SC, D = SoloCompass.Suggestions, SoloCompass, SoloCompass.Data
+function SS:IsLocked(instanceID, difficultyID)
+    if not instanceID or not GetNumSavedInstances or not GetSavedInstanceInfo then return false end
+    for index = 1, GetNumSavedInstances() do
+        local _, _, reset, difficulty, locked, _, _, _, _, _, _, _, _, savedID = GetSavedInstanceInfo(index)
+        if savedID == instanceID and locked and reset and reset > 0
+            and (not difficultyID or difficulty == difficultyID) then return true end
     end
-    return results
+    return false
 end
-
--- Collector pillar --------------------------------------------------------
-
-function SS:BuildCollector()
-    local results = {}
-
-    -- Mounts
-    for _, entry in ipairs(D.Mounts) do
-        if #results >= MAX_PER_PILLAR then break end
-        if not self:HasMount(entry.id) then
-            table.insert(results, {
-                pillar  = "collector",
-                subtype = "mount",
-                id      = entry.id,
-                name    = entry.name,
-                text    = entry.name .. " — " .. entry.source,
-                icon    = C_MountJournal.GetMountInfoByID(entry.id) and
-                          select(3, C_MountJournal.GetMountInfoByID(entry.id)) or
-                          "Interface\\Icons\\Ability_Mount_Wyvern_01",
-            })
-        end
-    end
-
-    -- Pets (fill remaining slots)
-    for _, entry in ipairs(D.Pets) do
-        if #results >= MAX_PER_PILLAR then break end
-        if not self:HasPet(entry.id) then
-            table.insert(results, {
-                pillar  = "collector",
-                subtype = "pet",
-                id      = entry.id,
-                text    = entry.name .. " — " .. entry.source,
-                icon    = "Interface\\Icons\\INV_Misc_MonsterHead_01",
-            })
-        end
-    end
-
-    -- Toys (fill remaining slots)
-    for _, entry in ipairs(D.Toys) do
-        if #results >= MAX_PER_PILLAR then break end
-        if not self:HasToy(entry.id) then
-            table.insert(results, {
-                pillar  = "collector",
-                subtype = "toy",
-                id      = entry.id,
-                text    = entry.name .. " — " .. entry.source,
-                icon    = "Interface\\Icons\\INV_Misc_Toy_10",
-            })
-        end
-    end
-
-    return results
-end
-
-function SS:HasMount(mountID)
-    local _, _, _, _, _, _, _, _, _, _, isCollected = C_MountJournal.GetMountInfoByID(mountID)
-    return isCollected == true
-end
-
-function SS:HasPet(speciesID)
-    local count = C_PetJournal.GetNumCollectedInfo(speciesID)
-    return count and count > 0
-end
-
-function SS:HasToy(itemID)
-    return PlayerHasToy(itemID)
-end
-
--- Quests pillar -----------------------------------------------------------
--- Scans the full quest log for non-daily, non-task quests from older content
--- (level < 70 = pre-TWW) that are just sitting there unfinished.
--- Quests with completed objectives are surfaced first as easy wins.
-
-local MAX_QUESTS = 3
-
--- TWW content begins at level 70. Anything below is pre-TWW.
-local CURRENT_CONTENT_FLOOR = 70
-
-function SS:BuildQuests()
-    local readyToTurnIn = {}
-    local stalled       = {}
-    local currentZone   = ""
-    local numEntries    = C_QuestLog.GetNumQuestLogEntries()
-
-    for i = 1, numEntries do
-        local info = C_QuestLog.GetInfo(i)
-        if not info then break end
-
-        if info.isHeader then
-            currentZone = info.title or ""
-        elseif self:IsAbandonedCandidate(info) then
-            local suffix = info.isComplete and " (ready to turn in!)" or ""
-            local entry = {
-                pillar    = "quests",
-                id        = info.questID,
-                text      = info.title .. "  |  " .. currentZone .. suffix,
-                icon      = "Interface\\Icons\\INV_Misc_Scroll_05",
-                questName = info.title,
-                zone      = currentZone,
-            }
-            if info.isComplete then
-                table.insert(readyToTurnIn, entry)
-            else
-                table.insert(stalled, entry)
+function SS:BuildQuests(add)
+    if not C_QuestLog then return end
+    local zone = "Quest log"
+    for index = 1, C_QuestLog.GetNumQuestLogEntries() do
+        local info = C_QuestLog.GetInfo(index)
+        if info then
+            if info.isHeader then zone = info.title or zone
+            elseif info.questID and info.questID > 0 and not info.isHidden and not info.isTask
+                and not info.isBounty and (info.frequency == nil or info.frequency == 0)
+                and (not info.suggestedGroup or info.suggestedGroup <= 1) then
+                local complete = C_QuestLog.IsComplete(info.questID)
+                add({ id = "quest:" .. info.questID, category = "quests", title = info.title,
+                    detail = zone .. ". " .. (complete and "Objectives complete. Find the turn-in to clear a quest-log slot."
+                        or "Finish one quest already in your log. Open its details to check the next objective."),
+                    reason = complete and "Ready to turn in" or "Already in your quest log",
+                    minutes = complete and 15 or 30, score = complete and 100 or (info.isOnMap and 85 or 70),
+                    action = "quest", targetID = info.questID, icon = "Interface\\Icons\\INV_Misc_Scroll_05" })
             end
         end
     end
-
-    -- Merge: completed objectives first, then stalled, cap at MAX_QUESTS
-    local results = {}
-    for _, e in ipairs(readyToTurnIn) do
-        if #results >= MAX_QUESTS then break end
-        table.insert(results, e)
-    end
-    for _, e in ipairs(stalled) do
-        if #results >= MAX_QUESTS then break end
-        table.insert(results, e)
-    end
-    return results
 end
-
--- Returns true if this quest log entry looks like abandoned older-content work.
-function SS:IsAbandonedCandidate(info)
-    if info.isHeader  then return false end
-    if info.isHidden  then return false end
-    if info.isTask    then return false end  -- world quests / tasks
-    if info.isBounty  then return false end
-    if info.frequency ~= 0 then return false end  -- 1=daily, 2=weekly
-    -- Level below the TWW floor means this quest is from a previous expansion
-    return info.level and info.level < CURRENT_CONTENT_FLOOR
+function SS:BuildMounts(add)
+    if not C_MountJournal or not C_MountJournal.GetMountFromItem then return end
+    for _, entry in ipairs(D.Mounts) do
+        local mountID = C_MountJournal.GetMountFromItem(entry.itemID)
+        if mountID then
+            local name, _, icon, _, _, _, _, _, _, hidden, owned = C_MountJournal.GetMountInfoByID(mountID)
+            if name and owned == false and not hidden and UnitLevel("player") >= entry.minLevel
+                and not self:IsLocked(entry.instanceID, entry.difficultyID) then
+                add({ id = "mount:" .. mountID, category = "mounts", title = name,
+                    detail = entry.source .. ". " .. entry.step .. " Rare drop; travel adds time.",
+                    reason = "Missing from your mount collection", minutes = entry.minutes, score = 65,
+                    action = "mount", targetID = mountID, mapID = entry.mapID, icon = icon })
+            end
+        end
+    end
+end
+function SS:BuildPets(add)
+    if not C_PetJournal or not C_PetJournal.GetPetInfoBySpeciesID then return end
+    for _, entry in ipairs(D.Pets) do
+        local name, icon, _, _, source, _, _, _, _, _, obtainable = C_PetJournal.GetPetInfoBySpeciesID(entry.speciesID)
+        local owned = C_PetJournal.GetNumCollectedInfo(entry.speciesID)
+        if name and owned == 0 and obtainable ~= false and source and source ~= "" then
+            add({ id = "pet:" .. entry.speciesID, category = "pets", title = name,
+                detail = source, reason = "Missing from your pet collection; acquisition may cost gold",
+                minutes = entry.minutes, score = 60, action = "pet", targetID = entry.speciesID, icon = icon })
+        end
+    end
+end
+function SS:BuildToys(add)
+    if not PlayerHasToy then return end
+    for _, entry in ipairs(D.Toys) do
+        if not PlayerHasToy(entry.itemID) and UnitLevel("player") >= entry.minLevel then
+            add({ id = "toy:" .. entry.itemID, category = "toys", title = entry.name,
+                detail = entry.step, reason = "Missing from your toy box; rare drop",
+                minutes = entry.minutes, score = 60, action = "toy", targetID = entry.itemID,
+                mapID = entry.mapID, icon = "Interface\\Icons\\INV_Misc_Toy_10" })
+        end
+    end
+end
+function SS:BuildRaids(add)
+    for _, entry in ipairs(D.Raids) do
+        if UnitLevel("player") >= entry.minLevel and not self:IsLocked(entry.id) then
+            add({ id = "raid:" .. entry.id, category = "raids", title = entry.title,
+                detail = entry.detail .. " Check your saved instances before traveling.",
+                reason = "A legacy outing; missing appearances are not checked",
+                minutes = entry.minutes, score = 50, action = "map", mapID = entry.mapID,
+                icon = "Interface\\Icons\\INV_Helmet_03" })
+        end
+    end
+end
+function SS:BuildActivities(add)
+    local maxLevel = GetMaxLevelForLatestExpansion and GetMaxLevelForLatestExpansion()
+    if maxLevel and UnitLevel("player") >= maxLevel then
+        add({ id = "activity:delve", category = "delves", title = "Run one Delve",
+            detail = "Find a Delve on your world map and choose a tier you can comfortably finish solo. Check rewards and keys in game.",
+            reason = "A self-paced progression session", minutes = 30, score = 55, action = "map",
+            icon = "Interface\\Icons\\INV_Misc_Map_01" })
+        add({ id = "activity:lfr", category = "lfr", title = "Try a Raid Finder wing",
+            detail = "Check the Raid Finder for an available wing and entry requirements. You queue alone but play with a group; queue time varies.",
+            reason = "Optional matchmade progression", minutes = 60, score = 45, action = "lfr",
+            icon = "Interface\\Icons\\INV_Misc_GroupLooking" })
+    end
+    add({ id = "activity:housing", category = "housing", title = "Make a small housing improvement",
+        detail = "If you have housing unlocked, pick one corner to decorate or check your neighborhood's available endeavors.",
+        reason = "A creative break; unlock and rewards are not checked", minutes = 15, score = 35, action = "info",
+        icon = "Interface\\Icons\\INV_Misc_House_01" })
+end
+function SS:Build()
+    local all, eligible = {}, {}
+    local interests, budget = SoloCompassCharDB.interests, SoloCompassCharDB.minutes
+    local function add(candidate)
+        all[#all + 1] = candidate
+        if interests[candidate.category] and candidate.minutes <= budget
+            and not SC.skipped[candidate.id] and candidate.id ~= SoloCompassCharDB.goalID then
+            eligible[#eligible + 1] = candidate
+        end
+    end
+    self:BuildQuests(add); self:BuildMounts(add); self:BuildPets(add)
+    self:BuildToys(add); self:BuildRaids(add); self:BuildActivities(add)
+    table.sort(eligible, function(a, b)
+        if a.score ~= b.score then return a.score > b.score end
+        return a.id < b.id
+    end)
+    -- Round-robin categories prevents a long quest log or mount list taking every slot.
+    local buckets, order = {}, {}
+    for _, candidate in ipairs(eligible) do
+        if not buckets[candidate.category] then
+            buckets[candidate.category] = {}; order[#order + 1] = candidate.category
+        end
+        table.insert(buckets[candidate.category], candidate)
+    end
+    local result = {}
+    if #order > 0 then
+        for round = 1, #eligible do
+            for index = 1, #order do
+                local key = order[((index - 1 + SC.rotation) % #order) + 1]
+                local bucket = buckets[key]
+                if round <= #bucket then
+                    result[#result + 1] = bucket[((round - 1 + SC.rotation) % #bucket) + 1]
+                    if #result == 3 then return result, all end
+                end
+            end
+        end
+    end
+    return result, all
+end
+function SS:IsGoalFinished(id)
+    local kind, number = id:match("^(%a+):(%d+)$")
+    number = tonumber(number)
+    if not number then return false end
+    if kind == "quest" and C_QuestLog then return C_QuestLog.IsQuestFlaggedCompleted(number)
+    elseif kind == "mount" and C_MountJournal then return select(11, C_MountJournal.GetMountInfoByID(number)) == true
+    elseif kind == "pet" and C_PetJournal then
+        local count = C_PetJournal.GetNumCollectedInfo(number); return count and count > 0
+    elseif kind == "toy" and PlayerHasToy then return PlayerHasToy(number) end
+    return false
 end
