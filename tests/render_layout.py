@@ -21,6 +21,38 @@ for _, s in ipairs(SoloCompass.candidates) do
 end
 SoloCompass.UI:Show(); SoloCompass.UI.preferences:Hide()
 ''')
+tracker_mode = '--tracker' in sys.argv
+if '--progress' in sys.argv:
+    lua.execute('''
+SoloCompass:ClearGoal()
+SoloCompassCharDB.interests={professions=true,campsites=true,reputation=true}
+C_TradeSkillUI={GetAllProfessionTradeSkillLines=function() return {1} end,
+    GetProfessionInfoBySkillLineID=function() return {professionID=1,professionName="Dragon Isles Tailoring",expansionName="Dragonflight",skillLevel=63,maxSkillLevel=100} end}
+C_WarbandScene={SearchWarbandSceneEntries=function() return {1} end,
+    GetWarbandSceneEntry=function() return {name="A quiet campsite",source="Complete this background's achievement requirements."} end,
+    HasWarbandScene=function() return false end}
+C_Reputation={GetNumFactions=function() return 1 end,
+    GetFactionDataByIndex=function() return {factionID=21,name="The Lorewalkers",reaction=7,currentStanding=20500,nextReactionThreshold=21000,isWatched=true,description="An older reputation to revisit."} end}
+SoloCompass:RefreshSuggestions(); SoloCompass.UI:Show()
+''')
+if '--interests' in sys.argv:
+    lua.execute('SoloCompass.UI:SelectTab("interests")')
+if '--welcome' in sys.argv:
+    lua.execute('SoloCompassCharDB=nil; SoloCompass:InitializeDB(); SoloCompass:RefreshSuggestions(); SoloCompass.UI:Show()')
+if '--preferences' in sys.argv:
+    lua.execute('SoloCompass.UI:ShowPreferences()')
+if tracker_mode:
+    if '--quest' in sys.argv:
+        lua.execute('''
+SoloCompass:ClearGoal(); SoloCompassCharDB.interests={quests=true}
+C_QuestLog.GetQuestObjectives=function() return {
+    {text="Collect fragments: 2/4",finished=false},
+    {text="Speak to the scout",finished=true}
+} end
+SoloCompass:RefreshSuggestions()
+for _,s in ipairs(SoloCompass.candidates) do if s.id=="quest:12" then SoloCompass:SetGoal(s); break end end
+''')
+    lua.execute('SoloCompass.UI:Hide()')
 records = {}
 for w in lua.globals().TEST_FRAMES.values():
     record = {k: w[k] for k in ('id', 'kind', 'name', 'shown', 'width', 'height', 'template', 'textValue', 'checked', 'texture')}
@@ -32,7 +64,7 @@ for w in lua.globals().TEST_FRAMES.values():
         values = list(point.values())
         record['points'].append([v.id if lua.eval('type')(v) == 'table' else v for v in values])
     records[record['id']] = record
-root = next(r for r in records.values() if r['name'] == 'SoloCompassFrame')
+root = next(r for r in records.values() if r['name'] == ('SoloCompassGoalTracker' if tracker_mode else 'SoloCompassFrame'))
 anchors = {'TOPLEFT': (0,0), 'TOP': (.5,0), 'TOPRIGHT': (1,0), 'LEFT': (0,.5),
            'CENTER': (.5,.5), 'RIGHT': (1,.5), 'BOTTOMLEFT': (0,1), 'BOTTOM': (.5,1), 'BOTTOMRIGHT': (1,1)}
 positions = {root['id']: (30, 35)}

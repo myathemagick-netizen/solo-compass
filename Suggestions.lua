@@ -17,15 +17,24 @@ function SS:BuildQuests(add)
         if info then
             if info.isHeader then zone = info.title or zone
             elseif info.questID and info.questID > 0 and not info.isHidden and not info.isTask
+                and not SC.justTurnedIn[info.questID]
                 and not info.isBounty and (info.frequency == nil or info.frequency == 0)
                 and (not info.suggestedGroup or info.suggestedGroup <= 1) then
                 local complete = C_QuestLog.IsComplete(info.questID)
+                local distance = C_QuestLog.GetDistanceSqToQuest and C_QuestLog.GetDistanceSqToQuest(info.questID)
+                local nearby = distance and distance <= 250000
+                local mapID = C_QuestLog.GetNextWaypoint and C_QuestLog.GetNextWaypoint(info.questID)
+                local theme = C_QuestLog.GetQuestDetailsTheme and C_QuestLog.GetQuestDetailsTheme(info.questID)
                 add({ id = "quest:" .. info.questID, category = "quests", title = info.title,
                     detail = zone .. ". " .. (complete and "Objectives complete. Find the turn-in to clear a quest-log slot."
                         or "Finish one quest already in your log. Open its details to check the next objective."),
-                    reason = complete and "Ready to turn in" or "Already in your quest log",
-                    minutes = complete and 15 or 30, score = complete and 100 or (info.isOnMap and 85 or 70),
-                    action = "quest", targetID = info.questID, icon = "Interface\\Icons\\INV_Misc_Scroll_05" })
+                    reason = (complete and "Ready to turn in" or "Already in your quest log")
+                        .. (nearby and "; within about 500 yards" or (info.isOnMap and "; on your current map" or "")),
+                    minutes = complete and 15 or 30, score = (complete and 100 or (info.isOnMap and 85 or 70)) + (nearby and 5 or 0),
+                    action = "quest", targetID = info.questID, mapID = mapID,
+                    atlas = theme and theme.poiIcon,
+                    timeNote = complete and "Turn-in estimate; travel may take longer." or "Planning allowance, not a measured quest duration; travel adds time.",
+                    icon = "Interface\\GossipFrame\\AvailableQuestIcon" })
             end
         end
     end
@@ -41,12 +50,13 @@ function SS:BuildMounts(add)
                 add({ id = "mount:" .. mountID, category = "mounts", title = name,
                     detail = entry.source .. ". " .. entry.step .. " Rare drop; travel adds time.",
                     reason = "Missing from your mount collection", minutes = entry.minutes, score = 65,
-                    action = "mount", targetID = mountID, mapID = entry.mapID, icon = icon })
+                    action = "mount", targetID = mountID, mapID = entry.mapID, instanceID = entry.instanceID or entry.dungeonID, icon = icon })
             end
         end
     end
 end
 function SS:BuildPets(add)
+    if SC.Progress and SC.Progress:HasPetCatalog() then return end
     if not C_PetJournal or not C_PetJournal.GetPetInfoBySpeciesID then return end
     for _, entry in ipairs(D.Pets) do
         local name, icon, _, _, source, _, _, _, _, _, obtainable = C_PetJournal.GetPetInfoBySpeciesID(entry.speciesID)
@@ -70,49 +80,69 @@ function SS:BuildToys(add)
     end
 end
 function SS:BuildRaids(add)
-    for _, entry in ipairs(D.Raids) do
-        if UnitLevel("player") >= entry.minLevel and not self:IsLocked(entry.id) then
-            add({ id = "raid:" .. entry.id, category = "raids", title = entry.title,
-                detail = entry.detail .. " Check your saved instances before traveling.",
-                reason = "A legacy outing; missing appearances are not checked",
-                minutes = entry.minutes, score = 50, action = "map", mapID = entry.mapID,
-                icon = "Interface\\Icons\\INV_Helmet_03" })
+    local expansion=GetServerExpansionLevel and GetServerExpansionLevel() or 11
+    local limit=math.min(9,expansion-2)
+    for _,entry in ipairs(D.Raids) do
+        if entry.expansionID<=limit and UnitLevel("player")>=entry.minLevel and not self:IsLocked(entry.id) then
+            local title,texture=entry.title
+            local journal=C_EncounterJournal and C_EncounterJournal.GetInstanceForGameMap and C_EncounterJournal.GetInstanceForGameMap(entry.id)
+            if journal and EJ_GetInstanceInfo then
+                local name,_,_,image=EJ_GetInstanceInfo(journal)
+                if name then title=name end
+                texture=image
+            end
+            texture=(GetAchievementInfo and entry.achievementID and select(10,GetAchievementInfo(entry.achievementID))) or texture
+            add({id="raid:"..entry.id,category="raids",title=title,
+                detail=entry.detail.." Soloability depends on difficulty, gear and encounter mechanics.",
+                reason="An older raid through Dragonflight; missing loot is not inferred",minutes=entry.minutes,score=50,
+                action="map",mapID=entry.mapID,instanceID=entry.id,
+                icon=texture or "Interface\\Icons\\Achievement_Raid_Karazhan",stepLabel="Choose one raid outing",
+                timeNote="Travel and full-clear time vary. Newer raids can have mechanics that prevent a solo clear; no clear is promised."})
         end
     end
 end
 function SS:BuildActivities(add)
     local maxLevel = GetMaxLevelForLatestExpansion and GetMaxLevelForLatestExpansion()
-    if maxLevel and UnitLevel("player") >= maxLevel then
+    if not (SC.Progress and SC.Progress:HasDelveCatalog()) and maxLevel and UnitLevel("player") >= maxLevel then
         add({ id = "activity:delve", category = "delves", title = "Run one Delve",
             detail = "Find a Delve on your world map and choose a tier you can comfortably finish solo. Check rewards and keys in game.",
             reason = "A self-paced progression session", minutes = 30, score = 55, action = "map",
-            icon = "Interface\\Icons\\INV_Misc_Map_01" })
-        add({ id = "activity:lfr", category = "lfr", title = "Try a Raid Finder wing",
-            detail = "Check the Raid Finder for an available wing and entry requirements. You queue alone but play with a group; queue time varies.",
-            reason = "Optional matchmade progression", minutes = 60, score = 45, action = "lfr",
-            icon = "Interface\\Icons\\INV_Misc_GroupLooking" })
+            atlas = "questlog-questtypeicon-delves", icon = "Interface\\Icons\\INV_Misc_Map_01" })
     end
-    add({ id = "activity:housing", category = "housing", title = "Make a small housing improvement",
+    if not SC.Progress then add({ id = "activity:housing", category = "housing", title = "Make a small housing improvement",
         detail = "If you have housing unlocked, pick one corner to decorate or check your neighborhood's available endeavors.",
         reason = "A creative break; unlock and rewards are not checked", minutes = 15, score = 35, action = "info",
-        icon = "Interface\\Icons\\INV_Misc_House_01" })
+        atlas = "housing-dashboard-homestone-icon", icon = "Interface\\Icons\\INV_Misc_Rune_01" }) end
 end
 function SS:Build()
-    local all, eligible = {}, {}
+    local all, eligible, seen = {}, {}, {}
     local interests, budget = SoloCompassCharDB.interests, SoloCompassCharDB.minutes
     local function add(candidate)
+        if seen[candidate.id] then return end
+        if SC.Progress and SC.Progress:IsFinished(candidate.id) then return end
+        seen[candidate.id] = true
+        candidate.timeNote = candidate.timeNote or (candidate.category == "mounts" and "One attempt, plus travel. Rare drop: the reward is not guaranteed."
+            or candidate.category == "toys" and "Search allowance, plus travel and respawn time. The drop is not guaranteed."
+            or candidate.category == "lfr" and "Wing estimate; queue time and group pace add time."
+            or candidate.category == "pets" and "Collection outing allowance; travel, availability, and gold costs vary."
+            or "Activity estimate; travel and preparation add time.")
         all[#all + 1] = candidate
         if interests[candidate.category] and candidate.minutes <= budget
-            and not SC.skipped[candidate.id] and candidate.id ~= SoloCompassCharDB.goalID then
+            and not SC:IsDismissed(candidate.id) and candidate.id ~= SoloCompassCharDB.goalID then
             eligible[#eligible + 1] = candidate
         end
     end
     self:BuildQuests(add); self:BuildMounts(add); self:BuildPets(add)
     self:BuildToys(add); self:BuildRaids(add); self:BuildActivities(add)
+    if SC.Progress then SC.Progress:Build(add) end
     table.sort(eligible, function(a, b)
         if a.score ~= b.score then return a.score > b.score end
         return a.id < b.id
     end)
+    local priority
+    for index,candidate in ipairs(eligible) do
+        if candidate.priority then priority=table.remove(eligible,index); break end
+    end
     -- Round-robin categories prevents a long quest log or mount list taking every slot.
     local buckets, order = {}, {}
     for _, candidate in ipairs(eligible) do
@@ -121,14 +151,24 @@ function SS:Build()
         end
         table.insert(buckets[candidate.category], candidate)
     end
-    local result = {}
+    for category, bucket in pairs(buckets) do
+        if category ~= "quests" then
+            table.sort(bucket, function(a, b)
+                local ah, bh = SC.historyBaseline[a.id] or 0, SC.historyBaseline[b.id] or 0
+                if ah ~= bh then return ah < bh end
+                if a.score ~= b.score then return a.score > b.score end
+                return a.id < b.id
+            end)
+        end
+    end
+    local result = priority and {priority} or {}
     if #order > 0 then
         for round = 1, #eligible do
             for index = 1, #order do
                 local key = order[((index - 1 + SC.rotation) % #order) + 1]
                 local bucket = buckets[key]
                 if round <= #bucket then
-                    result[#result + 1] = bucket[((round - 1 + SC.rotation) % #bucket) + 1]
+                    result[#result + 1] = bucket[((round - 1 + (key == "quests" and SC.rotation or 0)) % #bucket) + 1]
                     if #result == 3 then return result, all end
                 end
             end
@@ -137,10 +177,18 @@ function SS:Build()
     return result, all
 end
 function SS:IsGoalFinished(id)
+    if SC.Progress and SC.Progress:IsFinished(id) then return true end
     local kind, number = id:match("^(%a+):(%d+)$")
     number = tonumber(number)
     if not number then return false end
-    if kind == "quest" and C_QuestLog then return C_QuestLog.IsQuestFlaggedCompleted(number)
+    if kind == "quest" and C_QuestLog then
+        if SC.justTurnedIn[number] then return true end
+        -- Historical completion can be true for a quest currently in the log.
+        -- Active quests remain goals until this character actually turns them in.
+        local index = C_QuestLog.GetLogIndexForQuestID and C_QuestLog.GetLogIndexForQuestID(number)
+        if index and index > 0 then return false end
+        if C_QuestLog.IsOnQuest and C_QuestLog.IsOnQuest(number) then return false end
+        return C_QuestLog.IsQuestFlaggedCompleted(number)
     elseif kind == "mount" and C_MountJournal then return select(11, C_MountJournal.GetMountInfoByID(number)) == true
     elseif kind == "pet" and C_PetJournal then
         local count = C_PetJournal.GetNumCollectedInfo(number); return count and count > 0

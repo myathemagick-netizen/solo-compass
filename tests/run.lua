@@ -25,6 +25,7 @@ end
 function methods:CreateTexture(name, layer) return widget("Texture", name, self) end
 function methods:SetText(text) self.textValue = text end
 function methods:SetTexture(texture) self.texture = texture end
+function methods:SetAtlas(atlas) self.atlas = atlas end
 function methods:SetColorTexture(...) self.color = { ... } end
 function methods:SetBackdropColor(...) self.background = { ... } end
 function methods:SetTextColor(...) self.textColor = { ... } end
@@ -102,7 +103,7 @@ function ToggleCollectionsJournal(tab) calls.tab = tab; CollectionsJournal:Show(
 function PanelTemplates_GetSelectedTab() return calls.tab end
 function PVEFrame_ShowFrame(panel, selection) calls.pve, calls.pveSelection = panel, selection end
 GameTooltip = { SetOwner = function() end, SetText = function() end, AddLine = function() end, Show = function() end, Hide = function() end }
-for _, file in ipairs({ "SoloCompass.lua", "Data.lua", "Suggestions.lua", "UI.lua" }) do dofile(file) end
+for _, file in ipairs({ "SoloCompass.lua", "Data.lua", "Suggestions.lua", "Progress.lua", "Navigation.lua", "UI.lua" }) do dofile(file) end
 local SC, SS = SoloCompass, SoloCompass.Suggestions
 local passes = 0
 local function test(name, fn)
@@ -117,10 +118,12 @@ test("migrate old preferences and preserve false values", function()
     assert(SoloCompassCharDB.interests.housing)
 end)
 test("defaults do not alias across database initialization", function()
-    SoloCompassCharDB = nil; SC:InitializeDB(); SoloCompassCharDB.interests.mounts = false
-    SoloCompassCharDB = nil; SC:InitializeDB(); assert(SoloCompassCharDB.interests.mounts)
+    SoloCompassCharDB = nil; SC:InitializeDB(); SoloCompassCharDB.interests.mounts = true
+    SoloCompassCharDB = nil; SC:InitializeDB(); assert(not SoloCompassCharDB.interests.mounts)
 end)
 test("three diverse ideas with ready quest first", function()
+    SoloCompassCharDB.interests={quests=true,mounts=true,pets=true,toys=true,raids=true,delves=true}
+    SoloCompassCharDB.onboardingComplete=true
     local list = SS:Build(); assert(#list == 3 and list[1].id == "quest:11")
     assert(list[1].category ~= list[2].category and list[2].category ~= list[3].category)
     local _, all = SS:Build(); assert(not has(all, "quest:13") and not has(all, "quest:14"))
@@ -182,11 +185,128 @@ test("missing collection data is not treated as a missing collectible", function
     for _, s in ipairs(all) do assert(s.category ~= "mounts" and s.category ~= "pets") end
     C_MountJournal.GetMountInfoByID, C_PetJournal.GetPetInfoBySpeciesID = mountInfo, petInfo
 end)
-test("completion clears a goal even before the quest leaves the log", function()
+test("active historical completion stays selected until a real turn-in", function()
     local list = SS:Build(); local quest
     for _, s in ipairs(list) do if s.id == "quest:12" then quest = s end end
-    assert(quest); SC:SetGoal(quest); completed[12] = true; SC:RefreshSuggestions()
-    assert(SoloCompassCharDB.goalID == nil and SC.goal == nil); completed[12] = nil
+    assert(quest); completed[12] = true; SC:SetGoal(quest); SC:RefreshSuggestions()
+    assert(SC.goal and SC.goal.id == "quest:12")
+    for _, f in ipairs(frames) do if f.scripts.OnEvent then f.scripts.OnEvent(f,"QUEST_TURNED_IN",12); break end end
+    timers[#timers](); assert(SoloCompassCharDB.goalID == nil and SC.goal == nil)
+    completed[12] = nil; SC.justTurnedIn[12] = nil
+end)
+test("duplicate quest log entries never duplicate cards at any rotation", function()
+    quests[#quests + 1] = quests[2]
+    local complete = C_QuestLog.IsComplete
+    C_QuestLog.IsComplete = function() return true end
+    local saved = SoloCompassCharDB.interests
+    SoloCompassCharDB.interests = { quests=true, housing=true }; SoloCompassCharDB.minutes = 15
+    for rotation = 0, 8 do
+        SC.rotation = rotation
+        local list = SS:Build(); local seen = {}; assert(#list == 2)
+        for _, s in ipairs(list) do assert(not seen[s.id]); seen[s.id] = true end
+    end
+    table.remove(quests); C_QuestLog.IsComplete = complete
+    SC.rotation = 0; SoloCompassCharDB.minutes = 30; SoloCompassCharDB.interests = saved
+end)
+test("dismissals survive initialization, expire, and can be restored", function()
+    local now = 1000; GetServerTime = function() return now end
+    local s = {id="mount:32768"}
+    SC:Skip(s, "day"); assert(SC:IsDismissed(s.id))
+    SC:InitializeDB(); assert(SC:IsDismissed(s.id))
+    now = now + 86401; assert(not SC:IsDismissed(s.id))
+    SC:Skip(s, "forever"); now = now + 999999; assert(SC:IsDismissed(s.id))
+    SoloCompassCharDB.dismissals = {}; assert(not SC:IsDismissed(s.id))
+end)
+test("recent history favors unseen mounts and persists without refresh churn", function()
+    SC:ClearGoal(); SC.skipped = {}; SC.rotation = 0
+    local saved = SoloCompassCharDB.interests; SoloCompassCharDB.interests = {mounts=true}
+    SC:RefreshSuggestions(); local first = SC.currentSuggestions[1].id
+    SC:RememberShown(); SC:RefreshSuggestions(); assert(SC.currentSuggestions[1].id == first)
+    SC:InitializeDB(); SC:RefreshSuggestions(); assert(SC.currentSuggestions[1].id ~= first)
+    SoloCompassCharDB.interests = saved; SoloCompassCharDB.history = {}; SC.historyBaseline = {}
+end)
+test("live quest destinations and themed icons explain proximity", function()
+    C_QuestLog.GetNextWaypoint = function() return 2022, 0.3, 0.4 end
+    C_QuestLog.GetDistanceSqToQuest = function() return 10000 end
+    C_QuestLog.GetQuestDetailsTheme = function() return {poiIcon="test-quest-theme"} end
+    local _, all = SS:Build(); local quest
+    for _, s in ipairs(all) do if s.id == "quest:12" then quest = s end end
+    assert(quest and quest.atlas == "test-quest-theme" and quest.reason:find("500 yards"))
+    local map, x, y = SC.Navigation:Destination(quest); assert(map == 2022 and x == 0.3 and y == 0.4)
+    C_QuestLog.GetNextWaypoint, C_QuestLog.GetDistanceSqToQuest, C_QuestLog.GetQuestDetailsTheme = nil, nil, nil
+end)
+test("entrance navigation pins matching instances and respects combat", function()
+    C_EncounterJournal = {
+        GetInstanceForGameMap=function(id) assert(id == 532); return 745 end,
+        GetDungeonEntrancesForMap=function() return {
+            {journalInstanceID=999, position={GetXY=function() return 0.1, 0.1 end}},
+            {journalInstanceID=745, position={GetXY=function() return 0.47, 0.75 end}},
+        } end,
+    }
+    UiMapPoint = { CreateFromCoordinates=function(map, x, y) return {map=map,x=x,y=y} end }
+    C_Map = {CanSetUserWaypointOnMap=function() return true end,
+        SetUserWaypoint=function(point) calls.pin=point; return true end}
+    C_SuperTrack.SetSuperTrackedUserWaypoint=function(value) calls.userTracked=value end
+    SC.Navigation:Go({mapID=42, instanceID=532})
+    assert(calls.pin.map == 42 and calls.pin.x == 0.47 and calls.userTracked)
+    calls.pin=nil; combat=true; SC.Navigation:Go({mapID=42,instanceID=532}); assert(calls.pin == nil); combat=false
+    C_EncounterJournal.GetDungeonEntrancesForMap=function() return {} end
+    SC.Navigation:Go({mapID=42,instanceID=532}); assert(calls.pin == nil and calls.map == 42)
+    C_Map, C_EncounterJournal, UiMapPoint = nil, nil, nil
+end)
+test("failed waypoint placement never tracks an unrelated existing pin", function()
+    C_Map = {CanSetUserWaypointOnMap=function() return true end, SetUserWaypoint=function() return false end}
+    UiMapPoint = {CreateFromCoordinates=function() return {} end}
+    C_EncounterJournal = {GetInstanceForGameMap=function() return 1 end,
+        GetDungeonEntrancesForMap=function() return {{journalInstanceID=1,position={GetXY=function() return 0.2,0.3 end}}} end}
+    calls.userTracked=nil; SC.Navigation:Go({mapID=42,instanceID=532}); assert(calls.userTracked == nil)
+    C_Map, C_EncounterJournal, UiMapPoint = nil, nil, nil
+end)
+test("compact tracker persists, moves, hides, and clears with a completed goal", function()
+    SoloCompassCharDB.showTracker=true
+    local _, all=SS:Build(); local quest
+    for _, s in ipairs(all) do if s.id == "quest:12" then quest=s end end
+    SC:SetGoal(quest); SC.UI:Hide(); assert(SC.UI.tracker:IsShown())
+    SC.UI.tracker.scripts.OnDragStop(SC.UI.tracker); assert(SoloCompassCharDB.trackerPosition.point == "CENTER")
+    SC:InitializeDB(); SC:RefreshSuggestions(); assert(SC.goal.id == quest.id and SC.UI.tracker:IsShown())
+    SC.UI:Show(); assert(not SC.UI.tracker:IsShown())
+    SC.UI.dashboard:Hide(); SC.UI.dashboard.scripts.OnHide(SC.UI.dashboard)
+    assert(SC.UI.tracker:IsShown())
+    SC:QuestTurnedIn(12); timers[#timers](); assert(not SC.UI.tracker:IsShown() and SC.goal == nil)
+    completed[12]=nil; SC.justTurnedIn[12]=nil
+end)
+test("quest Track button keeps an active quest and updates visible objectives", function()
+    local interests=SoloCompassCharDB.interests; SoloCompassCharDB.interests={quests=true}; SC.rotation=0
+    completed[12]=true
+    C_QuestLog.GetQuestObjectives=function() return {{text="Collect fragments: 1/4",finished=false},{text="Speak to the scout",finished=true}} end
+    SC:RefreshSuggestions(); SC.UI:Show()
+    local card=SC.UI.cards[1]; assert(card.suggestion.id=="quest:12")
+    card.choose.scripts.OnClick()
+    assert(SC.goal and SC.goal.id=="quest:12" and SC.UI.tracker:IsShown() and not SC.UI.dashboard:IsShown())
+    assert(SC.UI.tracker.objectiveRows[1].textValue:find("1/4") and SC.UI.tracker.objectiveRows[2].textValue:find("%[x%]"))
+    C_QuestLog.GetQuestObjectives=function() return {{text="Collect fragments: 2/4",finished=false}} end
+    SC:ScheduleRefresh(); timers[#timers](); assert(SC.UI.tracker.objectiveRows[1].textValue:find("2/4"))
+    local isComplete=C_QuestLog.IsComplete; C_QuestLog.IsComplete=function() return true end
+    SC:RefreshSuggestions(); SC.UI:PopulateCards(); assert(SC.goal and SC.UI.tracker.objectiveRows[1].textValue:find("Ready to turn in"))
+    SC.UI:Show(); assert(SC.UI.goalTitle.textValue==SC.goal.title)
+    SC:QuestTurnedIn(12); timers[#timers](); assert(not SC.goal)
+    SC.justTurnedIn[12]=nil; completed[12]=nil; C_QuestLog.IsComplete=isComplete; C_QuestLog.GetQuestObjectives=nil
+    SoloCompassCharDB.interests=interests
+end)
+test("all categories carry visible icon data and honest timing notes", function()
+    local _, all=SS:Build()
+    for _, s in ipairs(all) do assert(s.icon or s.atlas); assert(s.timeNote and #s.timeNote > 10) end
+    SC:RefreshSuggestions(); SC.UI:Show()
+    for _, card in ipairs(SC.UI.cards) do
+        if card.suggestion then
+            assert(card.icon.shown and card.navigate and card.open and card.choose and card.skip)
+            for _, action in ipairs({card.navigate,card.open,card.choose,card.skip}) do
+                action.scripts.OnEnter(action); action.scripts.OnLeave(action)
+            end
+        end
+    end
+    local card=SC.UI.cards[1]; SC.UI:ShowDismissals(card); assert(SC.UI.dismissals:IsShown())
+    SC.UI:ShowDismissals(card); assert(not SC.UI.dismissals:IsShown())
 end)
 print(passes .. " scenario tests passed")
 -- Expose actual constructed UI objects to the optional layout renderer.
